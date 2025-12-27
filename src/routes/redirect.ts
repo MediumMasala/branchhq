@@ -86,8 +86,6 @@ async function handleRedirect(
     try {
       const selection = await selectPhoneForClick({
         link,
-        ip: clientIp,
-        userAgent,
         isBot: botDetected,
       });
       phone = selection.phone;

@@ -4,18 +4,11 @@ import {
   addPhones,
   updatePhoneStatus,
   deletePhone,
-  resetRotationCounter,
-  updateShuffleSeed,
-  getRotationCounter,
   getPhonesWithStats,
-  updateLinkRotationConfig,
 } from '../db/phones.js';
 import { setSecurityHeaders } from '../lib/security.js';
 import { linkSchema, generateSlug } from '../lib/validation.js';
-import { generateShuffleSeed, isValidRotationMode } from '../lib/rotation.js';
 import { cleanPhoneNumber } from '../lib/urlBuilder.js';
-
-const ROTATION_SEED_SECRET = process.env.ROTATION_SEED_SECRET || 'default-rotation-secret-change-me';
 
 export async function adminRoutes(fastify: FastifyInstance) {
   // Apply basic auth to all admin routes
@@ -88,10 +81,9 @@ export async function adminRoutes(fastify: FastifyInstance) {
     }
 
     const phones = await getPhonesWithStats(link.id);
-    const counter = await getRotationCounter(link.id);
     const baseUrl = (process.env.BASE_URL || `${request.protocol}://${request.hostname}`).trim();
 
-    return reply.type('text/html').send(generateCampaignDetailHtml(link, phones, Number(counter), baseUrl));
+    return reply.type('text/html').send(generateCampaignDetailHtml(link, phones, baseUrl));
   });
 
   // Edit campaign form
@@ -198,61 +190,6 @@ export async function adminRoutes(fastify: FastifyInstance) {
     }
   );
 
-  // V2: Reset rotation counter
-  fastify.post<{ Params: { slug: string } }>(
-    '/admin/:slug/rotation/reset',
-    async (request, reply) => {
-      const link = await getLinkBySlug(request.params.slug);
-      if (!link) {
-        return reply.status(404).send('Campaign not found');
-      }
-
-      await resetRotationCounter(link.id);
-      return reply.status(302).redirect(`/admin/${request.params.slug}`);
-    }
-  );
-
-  // V2: Force reshuffle
-  fastify.post<{ Params: { slug: string } }>(
-    '/admin/:slug/rotation/shuffle',
-    async (request, reply) => {
-      const link = await getLinkBySlug(request.params.slug);
-      if (!link) {
-        return reply.status(404).send('Campaign not found');
-      }
-
-      const newSeed = generateShuffleSeed(link.id, Date.now().toString(), ROTATION_SEED_SECRET);
-      await updateShuffleSeed(link.id, newSeed);
-      return reply.status(302).redirect(`/admin/${request.params.slug}`);
-    }
-  );
-
-  // V2: Update rotation config
-  fastify.post<{ Params: { slug: string }; Body: Record<string, string> }>(
-    '/admin/:slug/config',
-    async (request, reply) => {
-      const link = await getLinkBySlug(request.params.slug);
-      if (!link) {
-        return reply.status(404).send('Campaign not found');
-      }
-
-      const body = request.body;
-      const rotationMode = body.rotationMode;
-      const stickyEnabled = body.stickyEnabled === 'on' || body.stickyEnabled === 'true';
-      const stickyTtlHours = parseInt(body.stickyTtlHours || '24', 10) || 24;
-
-      if (rotationMode && isValidRotationMode(rotationMode)) {
-        await updateLinkRotationConfig(link.id, {
-          rotationMode,
-          stickyEnabled,
-          stickyTtlHours,
-        });
-      }
-
-      return reply.status(302).redirect(`/admin/${request.params.slug}`);
-    }
-  );
-
   // Deactivate campaign
   fastify.post<{ Params: { slug: string } }>('/admin/:slug/deactivate', async (request, reply) => {
     await deactivateLink(request.params.slug);
@@ -273,9 +210,6 @@ interface LinkWithStats {
   defaultPhone: string;
   defaultText: string;
   isActive: boolean;
-  rotationMode: string;
-  stickyEnabled: boolean;
-  stickyTtlHours: number;
   ogTitle: string | null;
   ogDescription: string | null;
   ogImage: string | null;
@@ -491,7 +425,6 @@ function generateAdminListHtml(links: LinkWithStats[], baseUrl: string): string 
 function generateCampaignDetailHtml(
   link: LinkWithStats,
   phones: PhoneWithStats[],
-  counter: number,
   baseUrl: string
 ): string {
   const shareUrl = `${baseUrl}/r/${link.slug}`;
@@ -686,44 +619,6 @@ function generateCampaignDetailHtml(
           <div class="stat-value">${activePhones}</div>
           <div class="stat-label">Active Phones</div>
         </div>
-        <div class="stat-box">
-          <div class="stat-value">${counter}</div>
-          <div class="stat-label">Rotation Counter</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Rotation Config -->
-    <h2>Rotation Configuration</h2>
-    <div class="card">
-      <form method="POST" action="/admin/${escapeHtml(link.slug)}/config">
-        <div class="config-row">
-          <div class="form-group" style="max-width: 250px;">
-            <label for="rotationMode">Rotation Mode</label>
-            <select id="rotationMode" name="rotationMode">
-              <option value="ROUND_ROBIN_SHUFFLED" ${link.rotationMode === 'ROUND_ROBIN_SHUFFLED' ? 'selected' : ''}>Round Robin (Shuffled)</option>
-              <option value="RANDOM_NO_REPEAT_EPOCH" ${link.rotationMode === 'RANDOM_NO_REPEAT_EPOCH' ? 'selected' : ''}>Random No Repeat (Daily)</option>
-              <option value="WEIGHTED" ${link.rotationMode === 'WEIGHTED' ? 'selected' : ''}>Weighted</option>
-            </select>
-          </div>
-          <div class="checkbox-group">
-            <input type="checkbox" id="stickyEnabled" name="stickyEnabled" ${link.stickyEnabled ? 'checked' : ''} />
-            <label for="stickyEnabled" style="margin: 0;">Sticky Sessions</label>
-          </div>
-          <div class="form-group" style="max-width: 120px;">
-            <label for="stickyTtlHours">Sticky TTL (hrs)</label>
-            <input type="number" id="stickyTtlHours" name="stickyTtlHours" value="${link.stickyTtlHours}" min="1" max="720" />
-          </div>
-          <button type="submit" class="btn">Save Config</button>
-        </div>
-      </form>
-      <div class="action-buttons">
-        <form method="POST" action="/admin/${escapeHtml(link.slug)}/rotation/reset" style="display:inline">
-          <button type="submit" class="btn btn-secondary btn-sm" onclick="return confirm('Reset rotation counter to 0?')">Reset Counter</button>
-        </form>
-        <form method="POST" action="/admin/${escapeHtml(link.slug)}/rotation/shuffle" style="display:inline">
-          <button type="submit" class="btn btn-secondary btn-sm" onclick="return confirm('Force reshuffle phone order?')">Reshuffle Now</button>
-        </form>
       </div>
     </div>
 
