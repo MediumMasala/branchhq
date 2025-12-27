@@ -406,16 +406,6 @@ function generateAdminFormHtml(link: LinkWithStats | null, error: string | null)
       border-radius: 6px;
       margin-bottom: 20px;
     }
-    .section-title {
-      font-size: 14px;
-      font-weight: 600;
-      color: #6b7280;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      margin: 24px 0 16px;
-      padding-top: 16px;
-      border-top: 1px solid #e5e7eb;
-    }
   </style>
 </head>
 <body>
@@ -461,29 +451,6 @@ function generateAdminFormHtml(link: LinkWithStats | null, error: string | null)
               ${link?.isActive !== false ? 'checked' : ''} />
             <label for="isActive" style="margin: 0;">Active</label>
           </div>
-        </div>
-
-        <h3 class="section-title">Social Preview (OpenGraph)</h3>
-
-        <div class="form-group">
-          <label for="ogTitle">Preview Title</label>
-          <input type="text" id="ogTitle" name="ogTitle"
-            value="${escapeHtml(link?.ogTitle || '')}"
-            placeholder="Title shown in social media previews" />
-        </div>
-
-        <div class="form-group">
-          <label for="ogDescription">Preview Description</label>
-          <textarea id="ogDescription" name="ogDescription"
-            placeholder="Description shown in social media previews">${escapeHtml(link?.ogDescription || '')}</textarea>
-        </div>
-
-        <div class="form-group">
-          <label for="ogImage">Preview Image URL</label>
-          <input type="url" id="ogImage" name="ogImage"
-            value="${escapeHtml(link?.ogImage || '')}"
-            placeholder="https://example.com/image.jpg" />
-          <p class="hint">Recommended size: 1200x630 pixels</p>
         </div>
 
         <div class="actions">
