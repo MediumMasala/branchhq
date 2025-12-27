@@ -10,30 +10,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     await app.ready();
   }
 
-  // Convert headers to the format Fastify expects
+  // Build headers object
   const headers: Record<string, string> = {};
   for (const [key, value] of Object.entries(req.headers)) {
-    if (value) {
-      headers[key] = Array.isArray(value) ? value.join(', ') : value;
+    if (value !== undefined) {
+      headers[key.toLowerCase()] = Array.isArray(value) ? value[0] : value;
     }
   }
 
-  // Use Fastify's inject method for serverless
+  // Use Fastify's inject for serverless
   const response = await app.inject({
     method: req.method as 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'HEAD' | 'OPTIONS',
     url: req.url || '/',
     headers,
-    payload: req.body ? JSON.stringify(req.body) : undefined,
-    query: req.query as Record<string, string>,
+    payload: req.body,
   });
 
-  // Set response headers
-  for (const [key, value] of Object.entries(response.headers)) {
-    if (value) {
-      res.setHeader(key, value);
+  // Copy response headers
+  const responseHeaders = response.headers;
+  for (const [key, value] of Object.entries(responseHeaders)) {
+    if (value !== undefined) {
+      res.setHeader(key, value as string);
     }
   }
 
-  // Send response
+  // Handle WWW-Authenticate header for Basic Auth
+  if (response.statusCode === 401 && responseHeaders['www-authenticate']) {
+    res.setHeader('WWW-Authenticate', responseHeaders['www-authenticate'] as string);
+  }
+
   res.status(response.statusCode).send(response.payload);
 }
