@@ -19,11 +19,19 @@ model Link {
   ogDescription String? @map("og_description")
   ogImage       String? @map("og_image")
 
+  // V2: Rotation configuration
+  rotationMode    String  @default("ROUND_ROBIN_SHUFFLED") @map("rotation_mode")
+  stickyEnabled   Boolean @default(false) @map("sticky_enabled")
+  stickyTtlHours  Int     @default(24) @map("sticky_ttl_hours")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
-  stats       LinkStats?
-  clickEvents ClickEvent[]
+  stats           LinkStats?
+  clickEvents     ClickEvent[]
+  phones          LinkPhone[]
+  rotation        LinkRotation?
+  fingerprintMaps FingerprintMap[]
 
   @@map("links")
 }
@@ -36,6 +44,9 @@ model LinkStats {
   androidClicks BigInt   @default(0) @map("android_clicks")
   desktopClicks BigInt   @default(0) @map("desktop_clicks")
   lastClickAt   DateTime? @map("last_click_at") @db.Timestamptz
+
+  // V2: Unique humans tracking (24h rolling window count)
+  uniqueHumans24h BigInt @default(0) @map("unique_humans_24h")
 
   link Link @relation(fields: [linkId], references: [id], onDelete: Cascade)
 
@@ -51,8 +62,63 @@ model ClickEvent {
   referer   String?
   hashedIp  String?  @map("hashed_ip")
 
+  // V2: Track which phone was used
+  phoneId   String?  @map("phone_id") @db.Uuid
+
   link Link @relation(fields: [linkId], references: [id], onDelete: Cascade)
 
   @@index([linkId, timestamp])
   @@map("click_events")
+}
+
+// V2: Phone pool for each campaign
+model LinkPhone {
+  id          String   @id @default(uuid()) @db.Uuid
+  linkId      String   @map("link_id") @db.Uuid
+  phoneNumber String   @map("phone_number")
+  status      String   @default("ACTIVE") // ACTIVE | PAUSED
+  weight      Int      @default(1) // For future weighted rotation
+  notes       String?
+
+  // Per-phone stats
+  totalClicks  BigInt    @default(0) @map("total_clicks")
+  lastClickAt  DateTime? @map("last_click_at") @db.Timestamptz
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  link            Link             @relation(fields: [linkId], references: [id], onDelete: Cascade)
+  fingerprintMaps FingerprintMap[]
+
+  @@index([linkId, status])
+  @@map("link_phones")
+}
+
+// V2: Atomic rotation counter per campaign
+model LinkRotation {
+  linkId         String    @id @map("link_id") @db.Uuid
+  counter        BigInt    @default(0)
+  shuffleSeed    String?   @map("shuffle_seed") // For epoch-based reshuffling
+  lastShuffledAt DateTime? @map("last_shuffled_at") @db.Timestamptz
+
+  link Link @relation(fields: [linkId], references: [id], onDelete: Cascade)
+
+  @@map("link_rotation")
+}
+
+// V2: Sticky fingerprint mapping for consistent phone assignment
+model FingerprintMap {
+  id              String   @id @default(uuid()) @db.Uuid
+  linkId          String   @map("link_id") @db.Uuid
+  fingerprintHash String   @map("fingerprint_hash")
+  phoneId         String   @map("phone_id") @db.Uuid
+  expiresAt       DateTime @map("expires_at") @db.Timestamptz
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  link  Link      @relation(fields: [linkId], references: [id], onDelete: Cascade)
+  phone LinkPhone @relation(fields: [phoneId], references: [id], onDelete: Cascade)
+
+  @@unique([linkId, fingerprintHash])
+  @@index([expiresAt])
+  @@map("fingerprint_map")
 }

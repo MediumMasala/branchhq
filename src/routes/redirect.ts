@@ -8,6 +8,10 @@ import { generatePreviewHtml, generate404Html } from '../lib/preview.js';
 import { setSecurityHeaders } from '../lib/security.js';
 import { hashIp, getClientIp } from '../lib/hash.js';
 import { redirectQuerySchema } from '../lib/validation.js';
+import { selectPhoneForClick, recordPhoneClick } from '../services/phoneSelector.js';
+
+// Environment variable for admin phone override
+const PHONE_OVERRIDE_KEY = process.env.PHONE_OVERRIDE_KEY || '';
 
 interface RedirectParams {
   slug: string;
@@ -54,34 +58,77 @@ async function handleRedirect(
     return reply.status(404).type('text/html').send(generate404Html());
   }
 
-  // Determine phone and text (with query overrides)
-  const phone = query.phone || link.defaultPhone;
-  const text = query.text || link.defaultText;
-  const utmParams = extractUtmParams(query);
-
   // Get user agent and detect platform/bot
-  const userAgent = request.headers['user-agent'];
+  const userAgent = request.headers['user-agent'] || '';
   const platform = detectPlatform(userAgent);
   const botDetected = isBot(userAgent);
+
+  // Get client IP for fingerprinting
+  const clientIp = getClientIp(request);
+
+  // V2: Phone selection via rotation (for humans)
+  // Phone override is ONLY allowed with secret key (for admin testing)
+  let phone: string;
+  let phoneId: string | null = null;
+
+  const hasValidOverrideKey = PHONE_OVERRIDE_KEY && query.override_key === PHONE_OVERRIDE_KEY;
+
+  if (hasValidOverrideKey && query.phone) {
+    // Admin override with secret key
+    phone = query.phone;
+    phoneId = null;
+  } else if (botDetected) {
+    // Bots get default phone, no rotation
+    phone = link.defaultPhone;
+    phoneId = null;
+  } else {
+    // Human: use phone rotation
+    try {
+      const selection = await selectPhoneForClick({
+        link,
+        ip: clientIp,
+        userAgent,
+        isBot: botDetected,
+      });
+      phone = selection.phone;
+      phoneId = selection.phoneId;
+    } catch (err) {
+      // Fallback to default phone if rotation fails
+      request.log.error({ err }, 'Phone selection failed, using default');
+      phone = link.defaultPhone;
+      phoneId = null;
+    }
+  }
+
+  // Text can still be overridden via query param (validated for length/encoding)
+  const text = query.text || link.defaultText;
+  const utmParams = extractUtmParams(query);
 
   // Check for force=1 to skip bot page
   const forceRedirect = query.force === '1' || query.force === 'true';
 
   // Record click (don't await - fire and forget for speed)
-  const clientIp = getClientIp(request);
   recordClick({
     linkId: link.id,
     platform,
     isBot: botDetected,
     referer: request.headers.referer,
     hashedIp: hashIp(clientIp),
+    phoneId, // V2: Track which phone was used
   }).catch((err) => {
     request.log.error({ err }, 'Failed to record click');
   });
 
+  // Record phone stats (don't await)
+  if (phoneId && !botDetected) {
+    recordPhoneClick(phoneId).catch((err) => {
+      request.log.error({ err }, 'Failed to record phone click');
+    });
+  }
+
   // If force preview OR (bot detected AND not forcing redirect)
   if (forcePreview || (botDetected && !forceRedirect)) {
-    const baseUrl = process.env.BASE_URL || `${request.protocol}://${request.hostname}`;
+    const baseUrl = (process.env.BASE_URL || `${request.protocol}://${request.hostname}`).trim();
     const previewHtml = generatePreviewHtml({
       title: link.ogTitle || link.campaignName,
       description: link.ogDescription || `Connect with us on WhatsApp`,
@@ -94,7 +141,7 @@ async function handleRedirect(
   }
 
   // Human redirect logic
-  const baseUrl = process.env.BASE_URL || `${request.protocol}://${request.hostname}`;
+  const baseUrl = (process.env.BASE_URL || `${request.protocol}://${request.hostname}`).trim();
 
   switch (platform) {
     case 'ios': {

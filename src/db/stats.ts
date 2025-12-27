@@ -7,10 +7,11 @@ export interface ClickData {
   isBot: boolean;
   referer?: string;
   hashedIp?: string;
+  phoneId?: string | null; // V2: Track which phone was used
 }
 
 export async function recordClick(data: ClickData): Promise<void> {
-  const { linkId, platform, isBot, referer, hashedIp } = data;
+  const { linkId, platform, isBot, referer, hashedIp, phoneId } = data;
 
   // Build the increment object based on platform and bot status
   const increment: Record<string, { increment: number }> = {
@@ -62,6 +63,7 @@ export async function recordClick(data: ClickData): Promise<void> {
           isBot,
           referer: referer?.slice(0, 500), // Truncate long referers
           hashedIp,
+          phoneId: phoneId || undefined, // V2: Track which phone was used
         },
       });
     }

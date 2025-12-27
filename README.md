@@ -8,6 +8,8 @@ A universal WhatsApp smart-link redirector with admin dashboard and click tracki
 - **Bot detection**: Serves OpenGraph preview pages to social media crawlers (LinkedIn, Twitter, Facebook, Slack, Discord, WhatsApp, etc.)
 - **Android bridge page**: Self-contained Android handler with intent:// support and fallbacks
 - **Click tracking**: Aggregated stats per campaign (total, human, by platform)
+- **Phone rotation (v2)**: Distribute clicks across 5-10 phone numbers per campaign
+- **Sticky sessions (v2)**: Same visitor gets same phone number within TTL window
 - **Admin dashboard**: Create and manage campaigns with Basic Auth protection
 - **Rate limiting**: Protection against abuse
 - **Security headers**: HSTS, CSP, X-Frame-Options, etc.
@@ -34,12 +36,15 @@ branchhq/
 │   ├── db/
 │   │   ├── client.ts     # Prisma client
 │   │   ├── links.ts      # Link CRUD operations
+│   │   ├── phones.ts     # Phone pool management (v2)
 │   │   └── stats.ts      # Click tracking
 │   ├── routes/
 │   │   ├── health.ts     # Health check endpoint
 │   │   ├── redirect.ts   # /r/:slug and /preview/:slug
 │   │   ├── android.ts    # /a/:slug Android bridge
-│   │   └── admin.ts      # Admin dashboard
+│   │   └── admin.ts      # Admin dashboard + phone management
+│   ├── services/
+│   │   └── phoneSelector.ts  # Phone rotation logic (v2)
 │   └── lib/
 │       ├── platform.ts   # iOS/Android/Desktop detection
 │       ├── isBot.ts      # Bot/crawler detection
@@ -47,6 +52,7 @@ branchhq/
 │       ├── preview.ts    # OpenGraph HTML generation
 │       ├── validation.ts # Zod schemas
 │       ├── security.ts   # Security headers
+│       ├── rotation.ts   # Stable shuffle & rotation (v2)
 │       └── hash.ts       # IP hashing for privacy
 ├── prisma/
 │   └── schema.prisma     # Database schema
@@ -102,6 +108,9 @@ The server will start at `http://localhost:3000`.
 | `BASE_URL` | Public URL for share links | `https://your-domain.com` |
 | `NODE_ENV` | Environment | `development` or `production` |
 | `ENABLE_CLICK_EVENTS` | Store individual click events | `true` or `false` (default: true) |
+| `ROTATION_SEED_SECRET` | Secret for phone rotation shuffle (v2) | Long random string |
+| `STICKY_FINGERPRINT_SALT` | Salt for fingerprint hashing (v2) | Long random string |
+| `PHONE_OVERRIDE_KEY` | Secret to allow ?phone override (v2) | Leave empty to disable |
 
 ## Database Setup
 
@@ -149,10 +158,18 @@ npm run prisma:migrate
 | `GET /admin` | List all campaigns |
 | `GET /admin/new` | New campaign form |
 | `POST /admin/new` | Create campaign |
+| `GET /admin/:slug` | Campaign detail with phone management (v2) |
 | `GET /admin/:slug/edit` | Edit campaign form |
 | `POST /admin/:slug/edit` | Update campaign |
 | `POST /admin/:slug/deactivate` | Soft delete campaign |
 | `POST /admin/:slug/delete` | Hard delete campaign |
+| `POST /admin/:slug/phones` | Add phones to pool (v2) |
+| `POST /admin/:slug/phones/:id/pause` | Pause a phone (v2) |
+| `POST /admin/:slug/phones/:id/unpause` | Unpause a phone (v2) |
+| `POST /admin/:slug/phones/:id/delete` | Delete a phone (v2) |
+| `POST /admin/:slug/rotation/reset` | Reset rotation counter (v2) |
+| `POST /admin/:slug/rotation/shuffle` | Force reshuffle (v2) |
+| `POST /admin/:slug/config` | Update rotation config (v2) |
 
 ## How Redirects Work
 
@@ -208,15 +225,61 @@ Override defaults per-request:
 
 | Parameter | Description |
 |-----------|-------------|
-| `phone` | Override default phone number |
 | `text` | Override default message text |
 | `force` | Set to `1` to skip bot preview page |
 | `utm_*` | UTM tracking parameters (preserved) |
+| `phone` | (v2) Disabled by default. Only works with `override_key` |
+| `override_key` | (v2) Secret key to allow phone override (for admin testing) |
 
 Example:
 ```
-https://your-domain.com/r/summer-sale?phone=14155551234&text=Custom%20message
+https://your-domain.com/r/summer-sale?text=Custom%20message
 ```
+
+Admin override (when `PHONE_OVERRIDE_KEY` is set):
+```
+https://your-domain.com/r/summer-sale?phone=14155551234&override_key=your-secret-key
+```
+
+## Phone Rotation (v2)
+
+Each campaign can have multiple phone numbers that rotate automatically.
+
+### Rotation Modes
+
+| Mode | Description |
+|------|-------------|
+| `ROUND_ROBIN_SHUFFLED` | Cycle through phones in a shuffled (but stable) order. Default. |
+| `RANDOM_NO_REPEAT_EPOCH` | Shuffle resets daily. Different order each day. |
+| `WEIGHTED` | Weight-based distribution (coming soon). |
+
+### Sticky Sessions
+
+When enabled, the same visitor gets the same phone for a configurable TTL (default: 24 hours).
+
+Fingerprint is based on:
+- Client IP
+- User Agent
+- Link ID
+- Secret salt
+
+This prevents users from seeing different numbers on repeated visits.
+
+### How to Set Up
+
+1. Create or edit a campaign
+2. Go to campaign detail page (`/admin/:slug`)
+3. Add phones to the pool
+4. Configure rotation mode and sticky settings
+5. Each click will rotate through active phones
+
+### Admin Controls
+
+- **Add Phones**: Paste phone numbers (one per line)
+- **Pause/Unpause**: Temporarily remove a phone from rotation
+- **Delete**: Permanently remove a phone
+- **Reset Counter**: Start rotation from beginning
+- **Force Reshuffle**: Regenerate shuffle order
 
 ## Deployment to Vercel
 
