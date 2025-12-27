@@ -1,15 +1,41 @@
 # BranchHQ
 
-A universal WhatsApp smart-link redirector with admin dashboard and click tracking.
+A universal WhatsApp smart-link redirector with admin dashboard, click tracking, and **automatic phone number rotation**.
 
-## Features
+## Key Feature: Phone Number Rotation
 
+**Distribute incoming leads across your sales team automatically.** Instead of all WhatsApp clicks going to one number, BranchHQ rotates through 5-10 phone numbers per campaign.
+
+### Why Use Phone Rotation?
+
+| Problem | Solution |
+|---------|----------|
+| One sales rep gets overwhelmed with leads | Clicks are distributed evenly across your team |
+| WhatsApp flagging a number for too many messages | Spread load across multiple numbers |
+| Hard to track which rep is converting leads | Per-phone click stats show who's receiving traffic |
+| Users see different numbers on repeat visits | Sticky sessions keep same user → same rep |
+
+### How It Works
+
+```
+Click #1 → Phone A (Rep 1)
+Click #2 → Phone B (Rep 2)
+Click #3 → Phone C (Rep 3)
+Click #4 → Phone A (Rep 1)  ← Rotation continues
+...
+```
+
+Each campaign maintains its own rotation counter. Paused phones are skipped automatically.
+
+## All Features
+
+- **Phone rotation**: Distribute clicks across 5-10 phone numbers per campaign
+- **Sticky sessions**: Same visitor gets same phone number within TTL window (configurable)
+- **Per-phone analytics**: Track clicks per phone number to measure rep performance
 - **Platform-aware redirects**: Automatically detects iOS, Android, and Desktop
 - **Bot detection**: Serves OpenGraph preview pages to social media crawlers (LinkedIn, Twitter, Facebook, Slack, Discord, WhatsApp, etc.)
 - **Android bridge page**: Self-contained Android handler with intent:// support and fallbacks
 - **Click tracking**: Aggregated stats per campaign (total, human, by platform)
-- **Phone rotation (v2)**: Distribute clicks across 5-10 phone numbers per campaign
-- **Sticky sessions (v2)**: Same visitor gets same phone number within TTL window
 - **Admin dashboard**: Create and manage campaigns with Basic Auth protection
 - **Rate limiting**: Protection against abuse
 - **Security headers**: HSTS, CSP, X-Frame-Options, etc.
@@ -243,17 +269,31 @@ https://your-domain.com/r/summer-sale?phone=14155551234&override_key=your-secret
 
 ## Phone Rotation (v2)
 
-Each campaign can have multiple phone numbers that rotate automatically.
+Each campaign can have multiple phone numbers that rotate automatically using **round-robin distribution**.
 
-### Rotation Modes
+### Quick Start
 
-| Mode | Description |
-|------|-------------|
-| `ROUND_ROBIN_SHUFFLED` | Cycle through phones in a shuffled (but stable) order. Default. |
-| `RANDOM_NO_REPEAT_EPOCH` | Shuffle resets daily. Different order each day. |
-| `WEIGHTED` | Weight-based distribution (coming soon). |
+1. Go to Admin Dashboard (`/admin`)
+2. Open a campaign detail page (`/admin/:slug`)
+3. Add phone numbers (one per line) in the Phone Pool section
+4. Done! Clicks will now rotate through all active phones
 
-### Sticky Sessions
+### How Round-Robin Works
+
+```
+Active Phones: [+1-555-0001, +1-555-0002, +1-555-0003]
+
+Click 1 → +1-555-0001
+Click 2 → +1-555-0002
+Click 3 → +1-555-0003
+Click 4 → +1-555-0001  (wraps around)
+Click 5 → +1-555-0002
+...
+```
+
+The rotation counter is **atomic** - even with concurrent clicks, each phone gets equal distribution.
+
+### Sticky Sessions (Optional)
 
 When enabled, the same visitor gets the same phone for a configurable TTL (default: 24 hours).
 
@@ -263,23 +303,25 @@ Fingerprint is based on:
 - Link ID
 - Secret salt
 
-This prevents users from seeing different numbers on repeated visits.
-
-### How to Set Up
-
-1. Create or edit a campaign
-2. Go to campaign detail page (`/admin/:slug`)
-3. Add phones to the pool
-4. Configure rotation mode and sticky settings
-5. Each click will rotate through active phones
+This prevents users from seeing different numbers on repeated visits - useful when a lead needs to follow up.
 
 ### Admin Controls
 
-- **Add Phones**: Paste phone numbers (one per line)
-- **Pause/Unpause**: Temporarily remove a phone from rotation
-- **Delete**: Permanently remove a phone
-- **Reset Counter**: Start rotation from beginning
-- **Force Reshuffle**: Regenerate shuffle order
+| Action | What it does |
+|--------|--------------|
+| **Add Phones** | Paste phone numbers (one per line) |
+| **Pause** | Temporarily remove a phone from rotation (e.g., rep on vacation) |
+| **Unpause** | Bring a paused phone back into rotation |
+| **Delete** | Permanently remove a phone from the pool |
+| **Reset Counter** | Start rotation from beginning (Click 1 → first phone) |
+
+### Per-Phone Stats
+
+Each phone tracks:
+- Total clicks received
+- Last click timestamp
+
+View these stats in the campaign detail page to see how traffic is distributed.
 
 ## Deployment to Vercel
 
