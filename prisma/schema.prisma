@@ -1,0 +1,58 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Link {
+  id           String   @id @default(uuid()) @db.Uuid
+  slug         String   @unique
+  campaignName String   @map("campaign_name")
+  defaultPhone String   @map("default_phone")
+  defaultText  String   @map("default_text")
+  isActive     Boolean  @default(true) @map("is_active")
+
+  ogTitle       String? @map("og_title")
+  ogDescription String? @map("og_description")
+  ogImage       String? @map("og_image")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  stats       LinkStats?
+  clickEvents ClickEvent[]
+
+  @@map("links")
+}
+
+model LinkStats {
+  linkId        String   @id @map("link_id") @db.Uuid
+  totalClicks   BigInt   @default(0) @map("total_clicks")
+  humanClicks   BigInt   @default(0) @map("human_clicks")
+  iosClicks     BigInt   @default(0) @map("ios_clicks")
+  androidClicks BigInt   @default(0) @map("android_clicks")
+  desktopClicks BigInt   @default(0) @map("desktop_clicks")
+  lastClickAt   DateTime? @map("last_click_at") @db.Timestamptz
+
+  link Link @relation(fields: [linkId], references: [id], onDelete: Cascade)
+
+  @@map("link_stats")
+}
+
+model ClickEvent {
+  id        String   @id @default(uuid()) @db.Uuid
+  linkId    String   @map("link_id") @db.Uuid
+  timestamp DateTime @default(now()) @map("ts") @db.Timestamptz
+  platform  String?
+  isBot     Boolean  @default(false) @map("is_bot")
+  referer   String?
+  hashedIp  String?  @map("hashed_ip")
+
+  link Link @relation(fields: [linkId], references: [id], onDelete: Cascade)
+
+  @@index([linkId, timestamp])
+  @@map("click_events")
+}
