@@ -48,6 +48,9 @@ model LinkStats {
   // V2: Unique humans tracking (24h rolling window count)
   uniqueHumans24h BigInt @default(0) @map("unique_humans_24h")
 
+  // V3: Android retry clicks (manual button taps on bridge page)
+  androidRetryClicks BigInt @default(0) @map("android_retry_clicks")
+
   link Link @relation(fields: [linkId], references: [id], onDelete: Cascade)
 
   @@map("link_stats")
@@ -64,6 +67,9 @@ model ClickEvent {
 
   // V2: Track which phone was used
   phoneId   String?  @map("phone_id") @db.Uuid
+
+  // V3: Track retry clicks (Android bridge page manual taps)
+  isRetryClick Boolean @default(false) @map("is_retry_click")
 
   link Link @relation(fields: [linkId], references: [id], onDelete: Cascade)
 

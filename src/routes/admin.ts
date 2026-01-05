@@ -6,23 +6,72 @@ import {
   deletePhone,
   getPhonesWithStats,
 } from '../db/phones.js';
+import { getStatsForDateRange, getAllLinksStatsForDateRange, DateFilteredStats } from '../db/stats.js';
 import { setSecurityHeaders } from '../lib/security.js';
 import { linkSchema, generateSlug } from '../lib/validation.js';
 import { cleanPhoneNumber } from '../lib/urlBuilder.js';
+
+// IST is UTC+5:30
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
+function getISTDateRange(filter: string): { start: Date; end: Date; label: string } {
+  const now = new Date();
+  const istNow = new Date(now.getTime() + IST_OFFSET_MS);
+
+  // Get IST date parts
+  const istYear = istNow.getUTCFullYear();
+  const istMonth = istNow.getUTCMonth();
+  const istDay = istNow.getUTCDate();
+
+  let startIST: Date;
+  let endIST: Date;
+  let label: string;
+
+  if (filter === 'yesterday') {
+    // Yesterday in IST
+    startIST = new Date(Date.UTC(istYear, istMonth, istDay - 1, 0, 0, 0, 0));
+    endIST = new Date(Date.UTC(istYear, istMonth, istDay, 0, 0, 0, 0));
+    label = 'Yesterday';
+  } else if (filter && filter.match(/^\d{4}-\d{2}-\d{2}$/)) {
+    // Custom date (YYYY-MM-DD format, treated as IST)
+    const [year, month, day] = filter.split('-').map(Number);
+    startIST = new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0));
+    endIST = new Date(Date.UTC(year, month - 1, day + 1, 0, 0, 0, 0));
+    label = filter;
+  } else {
+    // Default: Today in IST
+    startIST = new Date(Date.UTC(istYear, istMonth, istDay, 0, 0, 0, 0));
+    endIST = new Date(Date.UTC(istYear, istMonth, istDay + 1, 0, 0, 0, 0));
+    label = 'Today';
+  }
+
+  // Convert IST times back to UTC for database query
+  const startUTC = new Date(startIST.getTime() - IST_OFFSET_MS);
+  const endUTC = new Date(endIST.getTime() - IST_OFFSET_MS);
+
+  return { start: startUTC, end: endUTC, label };
+}
 
 export async function adminRoutes(fastify: FastifyInstance) {
   // Apply basic auth to all admin routes
   fastify.addHook('onRequest', fastify.basicAuth);
 
   // List all campaigns
-  fastify.get('/admin', async (request, reply) => {
+  // V3: Added date filtering support
+  fastify.get<{ Querystring: { date?: string } }>('/admin', async (request, reply) => {
     setSecurityHeaders(reply);
     reply.header('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     reply.header('Pragma', 'no-cache');
     reply.header('Expires', '0');
     const links = await getAllLinks();
     const baseUrl = (process.env.BASE_URL || `${request.protocol}://${request.hostname}`).trim();
-    return reply.type('text/html').send(generateAdminListHtml(links, baseUrl));
+
+    // V3: Get date filter from query params
+    const dateFilter = (request.query as { date?: string }).date || 'today';
+    const { start, end, label } = getISTDateRange(dateFilter);
+    const filteredStatsMap = await getAllLinksStatsForDateRange(start, end);
+
+    return reply.type('text/html').send(generateAdminListHtml(links, baseUrl, filteredStatsMap, dateFilter, label));
   });
 
   // New campaign form
@@ -71,7 +120,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
   });
 
   // V2: Campaign detail page with phone management
-  fastify.get<{ Params: { slug: string } }>('/admin/:slug', async (request, reply) => {
+  // V3: Added date filtering support
+  fastify.get<{ Params: { slug: string }; Querystring: { date?: string } }>('/admin/:slug', async (request, reply) => {
     setSecurityHeaders(reply);
     reply.header('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
 
@@ -83,7 +133,12 @@ export async function adminRoutes(fastify: FastifyInstance) {
     const phones = await getPhonesWithStats(link.id);
     const baseUrl = (process.env.BASE_URL || `${request.protocol}://${request.hostname}`).trim();
 
-    return reply.type('text/html').send(generateCampaignDetailHtml(link, phones, baseUrl));
+    // V3: Get date filter from query params
+    const dateFilter = (request.query as { date?: string }).date || 'today';
+    const { start, end, label } = getISTDateRange(dateFilter);
+    const filteredStats = await getStatsForDateRange(link.id, start, end);
+
+    return reply.type('text/html').send(generateCampaignDetailHtml(link, phones, baseUrl, filteredStats, dateFilter, label));
   });
 
   // Edit campaign form
@@ -221,6 +276,7 @@ interface LinkWithStats {
     iosClicks: bigint;
     androidClicks: bigint;
     desktopClicks: bigint;
+    androidRetryClicks: bigint;
     lastClickAt: Date | null;
   } | null;
 }
@@ -235,14 +291,38 @@ interface PhoneWithStats {
   percentShare?: number;
 }
 
-function generateAdminListHtml(links: LinkWithStats[], baseUrl: string): string {
+function generateAdminListHtml(
+  links: LinkWithStats[],
+  baseUrl: string,
+  filteredStatsMap?: Map<string, DateFilteredStats>,
+  dateFilter?: string,
+  dateLabel?: string
+): string {
+  const currentFilter = dateFilter || 'today';
+  const currentLabel = dateLabel || 'Today';
+
+  // Get today's date in IST for the date picker max value
+  const now = new Date();
+  const istNow = new Date(now.getTime() + 5.5 * 60 * 60 * 1000);
+  const todayIST = istNow.toISOString().split('T')[0];
+
   const rows = links
     .map((link) => {
       const shareUrl = `${baseUrl}/r/${link.slug}`;
-      const stats = link.stats;
-      const lastClick = stats?.lastClickAt
-        ? new Date(stats.lastClickAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
+      const allTimeStats = link.stats;
+      const lastClick = allTimeStats?.lastClickAt
+        ? new Date(allTimeStats.lastClickAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
         : 'Never';
+
+      // Use filtered stats if available, otherwise show 0 for the selected period
+      const stats = filteredStatsMap?.get(link.id) || {
+        totalClicks: 0,
+        humanClicks: 0,
+        iosClicks: 0,
+        androidClicks: 0,
+        desktopClicks: 0,
+        androidRetryClicks: 0,
+      };
 
       return `
         <tr class="${link.isActive ? '' : 'inactive'}">
@@ -259,11 +339,12 @@ function generateAdminListHtml(links: LinkWithStats[], baseUrl: string): string 
               <button onclick="copyToClipboard('${escapeHtml(shareUrl)}')" class="copy-btn">Copy</button>
             </div>
           </td>
-          <td class="num">${stats?.totalClicks.toString() || '0'}</td>
-          <td class="num">${stats?.humanClicks.toString() || '0'}</td>
-          <td class="num platform">${stats?.iosClicks.toString() || '0'}</td>
-          <td class="num platform">${stats?.androidClicks.toString() || '0'}</td>
-          <td class="num platform">${stats?.desktopClicks.toString() || '0'}</td>
+          <td class="num">${stats.totalClicks}</td>
+          <td class="num">${stats.humanClicks}</td>
+          <td class="num platform">${stats.iosClicks}</td>
+          <td class="num platform">${stats.androidClicks}</td>
+          <td class="num platform">${stats.desktopClicks}</td>
+          <td class="num platform highlight-cell">${stats.androidRetryClicks}</td>
           <td class="date">${lastClick}</td>
           <td class="actions">
             <a href="/admin/${escapeHtml(link.slug)}" class="btn btn-sm">Manage</a>
@@ -373,6 +454,39 @@ function generateAdminListHtml(links: LinkWithStats[], baseUrl: string): string 
     .empty { padding: 40px; text-align: center; color: #6b7280; }
     .campaign-link { color: inherit; text-decoration: none; }
     .campaign-link:hover { color: #4f46e5; }
+    .date-filter-container {
+      background: white;
+      border-radius: 8px;
+      padding: 16px 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    .date-filter { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    .filter-label { font-weight: 500; color: #374151; }
+    .filter-buttons { display: flex; gap: 8px; align-items: center; }
+    .filter-btn {
+      padding: 8px 16px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      text-decoration: none;
+      color: #374151;
+      font-size: 14px;
+      background: white;
+      transition: all 0.2s;
+    }
+    .filter-btn:hover { background: #f3f4f6; border-color: #9ca3af; }
+    .filter-btn.active { background: #4f46e5; color: white; border-color: #4f46e5; }
+    .date-input {
+      padding: 7px 12px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .date-input:hover { border-color: #9ca3af; }
+    .current-filter { font-size: 14px; color: #6b7280; }
+    .current-filter strong { color: #1a1a2e; }
+    .highlight-cell { background: #fef3c7; }
     @media (max-width: 1200px) {
       .platform { display: none; }
     }
@@ -383,8 +497,21 @@ function generateAdminListHtml(links: LinkWithStats[], baseUrl: string): string 
     <div class="header">
       <h1>BranchHQ Campaigns</h1>
       <div class="header-actions">
-        <button onclick="window.location.href='/admin?t='+Date.now()" class="btn btn-refresh">Refresh</button>
+        <button onclick="window.location.href='/admin?date=${currentFilter}&t='+Date.now()" class="btn btn-refresh">Refresh</button>
         <a href="/admin/new" class="btn">+ Add New Campaign</a>
+      </div>
+    </div>
+
+    <!-- Date Filter -->
+    <div class="date-filter-container">
+      <div class="date-filter">
+        <span class="filter-label">Filter by date (IST):</span>
+        <div class="filter-buttons">
+          <a href="/admin?date=today" class="filter-btn ${currentFilter === 'today' ? 'active' : ''}">Today</a>
+          <a href="/admin?date=yesterday" class="filter-btn ${currentFilter === 'yesterday' ? 'active' : ''}">Yesterday</a>
+          <input type="date" id="customDate" max="${todayIST}" value="${currentFilter.match(/^\\d{4}-\\d{2}-\\d{2}$/) ? currentFilter : ''}" onchange="if(this.value) window.location.href='/admin?date='+this.value" class="date-input" title="Pick a specific date" />
+        </div>
+        <span class="current-filter">Showing: <strong>${escapeHtml(currentLabel)}</strong></span>
       </div>
     </div>
 
@@ -399,12 +526,13 @@ function generateAdminListHtml(links: LinkWithStats[], baseUrl: string): string 
           <th class="num platform">iOS</th>
           <th class="num platform">Android</th>
           <th class="num platform">Desktop</th>
+          <th class="num platform" title="Android users who tapped the button on the bridge page">Android Retry</th>
           <th>Last Click</th>
           <th>Actions</th>
         </tr>
       </thead>
       <tbody>
-        ${rows || '<tr><td colspan="10" class="empty">No campaigns yet. Create your first one!</td></tr>'}
+        ${rows || '<tr><td colspan="11" class="empty">No campaigns yet. Create your first one!</td></tr>'}
       </tbody>
     </table>
   </div>
@@ -425,11 +553,32 @@ function generateAdminListHtml(links: LinkWithStats[], baseUrl: string): string 
 function generateCampaignDetailHtml(
   link: LinkWithStats,
   phones: PhoneWithStats[],
-  baseUrl: string
+  baseUrl: string,
+  filteredStats?: DateFilteredStats,
+  dateFilter?: string,
+  dateLabel?: string
 ): string {
   const shareUrl = `${baseUrl}/r/${link.slug}`;
   const stats = link.stats;
   const activePhones = phones.filter((p) => p.status === 'ACTIVE').length;
+
+  // Use filtered stats if provided, otherwise fall back to all-time stats
+  const displayStats = filteredStats || {
+    totalClicks: Number(stats?.totalClicks || 0),
+    humanClicks: Number(stats?.humanClicks || 0),
+    iosClicks: Number(stats?.iosClicks || 0),
+    androidClicks: Number(stats?.androidClicks || 0),
+    desktopClicks: Number(stats?.desktopClicks || 0),
+    androidRetryClicks: Number(stats?.androidRetryClicks || 0),
+  };
+
+  const currentFilter = dateFilter || 'today';
+  const currentLabel = dateLabel || 'Today';
+
+  // Get today's date in IST for the date picker max value
+  const now = new Date();
+  const istNow = new Date(now.getTime() + 5.5 * 60 * 60 * 1000);
+  const todayIST = istNow.toISOString().split('T')[0];
 
   const phoneRows = phones
     .map((phone) => {
@@ -587,6 +736,32 @@ function generateCampaignDetailHtml(
     }
     .checkbox-group input { width: auto; }
     .action-buttons { display: flex; gap: 8px; margin-top: 16px; }
+    .date-filter { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    .filter-label { font-weight: 500; color: #374151; }
+    .filter-buttons { display: flex; gap: 8px; align-items: center; }
+    .filter-btn {
+      padding: 8px 16px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      text-decoration: none;
+      color: #374151;
+      font-size: 14px;
+      background: white;
+      transition: all 0.2s;
+    }
+    .filter-btn:hover { background: #f3f4f6; border-color: #9ca3af; }
+    .filter-btn.active { background: #4f46e5; color: white; border-color: #4f46e5; }
+    .date-input {
+      padding: 7px 12px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .date-input:hover { border-color: #9ca3af; }
+    .current-filter { font-size: 14px; color: #6b7280; }
+    .current-filter strong { color: #1a1a2e; }
+    .stat-box.highlight { background: #fef3c7; border: 1px solid #fcd34d; }
   </style>
 </head>
 <body>
@@ -604,16 +779,46 @@ function generateCampaignDetailHtml(
       </div>
     </div>
 
+    <!-- Date Filter -->
+    <div class="card" style="margin-bottom: 16px;">
+      <div class="date-filter">
+        <span class="filter-label">Filter by date (IST):</span>
+        <div class="filter-buttons">
+          <a href="/admin/${escapeHtml(link.slug)}?date=today" class="filter-btn ${currentFilter === 'today' ? 'active' : ''}">Today</a>
+          <a href="/admin/${escapeHtml(link.slug)}?date=yesterday" class="filter-btn ${currentFilter === 'yesterday' ? 'active' : ''}">Yesterday</a>
+          <a href="/admin/${escapeHtml(link.slug)}" class="filter-btn ${currentFilter !== 'today' && currentFilter !== 'yesterday' && !currentFilter.match(/^\\d{4}-\\d{2}-\\d{2}$/) ? 'active' : ''}" style="display:none;">All Time</a>
+          <input type="date" id="customDate" max="${todayIST}" value="${currentFilter.match(/^\\d{4}-\\d{2}-\\d{2}$/) ? currentFilter : ''}" onchange="if(this.value) window.location.href='/admin/${escapeHtml(link.slug)}?date='+this.value" class="date-input" title="Pick a specific date" />
+        </div>
+        <span class="current-filter">Showing: <strong>${escapeHtml(currentLabel)}</strong></span>
+      </div>
+    </div>
+
     <!-- Stats -->
     <div class="card">
       <div class="stats-grid">
         <div class="stat-box">
-          <div class="stat-value">${stats?.totalClicks.toString() || '0'}</div>
+          <div class="stat-value">${displayStats.totalClicks}</div>
           <div class="stat-label">Total Clicks</div>
         </div>
         <div class="stat-box">
-          <div class="stat-value">${stats?.humanClicks.toString() || '0'}</div>
+          <div class="stat-value">${displayStats.humanClicks}</div>
           <div class="stat-label">Human Clicks</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-value">${displayStats.iosClicks}</div>
+          <div class="stat-label">iOS Clicks</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-value">${displayStats.androidClicks}</div>
+          <div class="stat-label">Android Clicks</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-value">${displayStats.desktopClicks}</div>
+          <div class="stat-label">Desktop Clicks</div>
+        </div>
+        <div class="stat-box highlight">
+          <div class="stat-value">${displayStats.androidRetryClicks}</div>
+          <div class="stat-label">Android Retry</div>
         </div>
         <div class="stat-box">
           <div class="stat-value">${activePhones}</div>

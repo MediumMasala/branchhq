@@ -2,6 +2,8 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { setSecurityHeaders } from '../lib/security.js';
 import { cleanPhoneNumber } from '../lib/urlBuilder.js';
 import { androidBridgeQuerySchema } from '../lib/validation.js';
+import { getActiveLink } from '../db/links.js';
+import { recordAndroidRetryClick } from '../db/stats.js';
 
 interface AndroidParams {
   slug: string;
@@ -14,6 +16,26 @@ export async function androidRoutes(fastify: FastifyInstance) {
       return handleAndroidBridge(request, reply);
     }
   );
+
+  // V3: Record Android retry click (when user manually taps the button)
+  fastify.post<{ Params: AndroidParams }>(
+    '/a/:slug/retry-click',
+    async (request, reply) => {
+      const { slug } = request.params;
+      const link = await getActiveLink(slug);
+
+      if (!link) {
+        return reply.status(404).send({ error: 'Not found' });
+      }
+
+      // Record the retry click (fire and forget for speed)
+      recordAndroidRetryClick(link.id).catch((err) => {
+        request.log.error({ err }, 'Failed to record android retry click');
+      });
+
+      return reply.status(200).send({ ok: true });
+    }
+  );
 }
 
 async function handleAndroidBridge(
@@ -22,6 +44,7 @@ async function handleAndroidBridge(
 ) {
   setSecurityHeaders(reply);
 
+  const { slug } = request.params;
   const queryResult = androidBridgeQuerySchema.safeParse(request.query);
 
   if (!queryResult.success) {
@@ -38,6 +61,7 @@ async function handleAndroidBridge(
   const intentUrl = `intent://send?phone=${cleanPhone}&text=${encodedText}#Intent;scheme=whatsapp;package=com.whatsapp;S.browser_fallback_url=${encodedFallback};end;`;
 
   const html = generateAndroidBridgeHtml({
+    slug,
     phone: cleanPhone,
     text,
     intentUrl,
@@ -47,13 +71,14 @@ async function handleAndroidBridge(
 }
 
 interface AndroidBridgeHtmlOptions {
+  slug: string;
   phone: string;
   text: string;
   intentUrl: string;
 }
 
 function generateAndroidBridgeHtml(options: AndroidBridgeHtmlOptions): string {
-  const { intentUrl } = options;
+  const { slug, intentUrl } = options;
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -295,6 +320,44 @@ function generateAndroidBridgeHtml(options: AndroidBridgeHtmlOptions): string {
             Open WhatsApp
         </a>
     </div>
+
+    <script>
+        // V3: Track unique retry clicks per session (manual button taps)
+        (function() {
+            var slug = '${escapeHtml(slug)}';
+            var storageKey = 'branchhq_retry_' + slug;
+            var retryUrl = '/a/' + slug + '/retry-click';
+
+            function trackClick() {
+                // Check if already tracked in this session
+                try {
+                    if (sessionStorage.getItem(storageKey)) return;
+                    sessionStorage.setItem(storageKey, '1');
+                } catch (e) {
+                    // sessionStorage not available, fall back to tracking anyway
+                }
+
+                // Use sendBeacon for reliability (works even if page unloads)
+                if (navigator.sendBeacon) {
+                    navigator.sendBeacon(retryUrl);
+                } else {
+                    // Fallback to fetch for older browsers
+                    fetch(retryUrl, { method: 'POST', keepalive: true }).catch(function() {});
+                }
+            }
+
+            // Track clicks on the screenshot link and button
+            var screenshotLink = document.getElementById('screenshotLink');
+            var whatsappBtn = document.getElementById('whatsappBtn');
+
+            if (screenshotLink) {
+                screenshotLink.addEventListener('click', trackClick);
+            }
+            if (whatsappBtn) {
+                whatsappBtn.addEventListener('click', trackClick);
+            }
+        })();
+    </script>
 </body>
 </html>`;
 }
